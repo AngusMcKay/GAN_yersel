@@ -1,0 +1,12 @@
+# pictures
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# models
+*.h5
+*.pkl
+
+# pycache
+*__pycache__*
