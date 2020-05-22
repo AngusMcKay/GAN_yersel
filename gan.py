@@ -12,6 +12,7 @@ from tensorflow.keras.layers import Input, Dense, Reshape, Flatten, Dropout, Bat
 from tensorflow.keras.layers import Activation, ZeroPadding2D, LeakyReLU, UpSampling2D, Conv2D, Conv2DTranspose
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.optimizers import Adam, RMSprop
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 
 
@@ -129,11 +130,11 @@ class GAN():
 
 
 class DCGAN():
-    def __init__(self, image_shape, generator_input_dim, image_hepler, img_channels,
+    def __init__(self, image_shape, generator_input_dim, image_helper, img_channels,
                  pre_load_discriminator=None, pre_load_generator=None):
         optimizer = Adam(0.0002, 0.5)
         
-        self._image_helper = image_hepler
+        self._image_helper = image_helper
         self.img_shape = image_shape
         self.generator_input_dim = generator_input_dim
         self.channels = img_channels
@@ -277,11 +278,11 @@ class DCGAN():
 
 
 class USERGAN():
-    def __init__(self, image_shape, generator_input_dim, image_hepler, img_channels,
+    def __init__(self, image_shape, generator_input_dim, image_helper, img_channels,
                  pre_load_discriminator, pre_load_generator):
         optimizer = Adam(0.0002, 0.5)
         
-        self._image_helper = image_hepler
+        self._image_helper = image_helper
         self.img_shape = image_shape
         self.generator_input_dim = generator_input_dim
         self.channels = img_channels
@@ -298,11 +299,16 @@ class USERGAN():
         self._build_and_compile_gan(optimizer)
     
     def generate_images(self, size, epoch, display_directory, permanent_directory):
+        # first clear display_directory
+        previous_image_paths = glob.glob(display_directory+"/*.png")
+        for path in previous_image_paths:
+            os.remove(path)
+        
         # generate images to display to users, and also store in permanent directory for later collection
         noise = np.random.normal(0, 1, (size, self.generator_input_dim))
         generated = self.generator_model.predict(noise)
         generated = 0.5 * generated + 0.5
-        self._image_helper.send_to_ui(generated, 0, display_directory)
+        self._image_helper.send_to_ui(generated, 1, display_directory)
         self._image_helper.send_to_ui(generated, epoch, permanent_directory)
     
     def process_images(self, input_directory, user_ratings_dict):
@@ -314,7 +320,7 @@ class USERGAN():
             # get rating for image
             for key in user_ratings_dict:
                 if key in path:
-                    image_rating = user_ratings_dict[key]
+                    image_rating = float(user_ratings_dict[key])
             # first copy original image
             image = imageio.imread(path)
             images_for_retraining.append(image)
@@ -322,45 +328,46 @@ class USERGAN():
             
             # delete user_rating to throw exceptions if can't find for particular image
             del(image_rating)
+        
+        # rescale for training
+        images_for_retraining = np.asarray(images_for_retraining)
+        images_for_retraining = images_for_retraining/127.5 - 1
+        images_for_retraining = np.expand_dims(images_for_retraining, axis=3)
+        labels_for_retraining = np.asarray(labels_for_retraining).reshape(len(labels_for_retraining),1)
+        
+        return images_for_retraining, labels_for_retraining
     
     def retrain(self, train_data, user_ratings, augmentations_per_image, batch_size):
         
-        #real = np.ones((batch_size, 1))
-        #fake = np.zeros((batch_size, 1))
-        #history = []
+        train_data_gen = ImageDataGenerator(
+                # keep changes small for fashion dataset
+                #featurewise_center=True, # do these first two do the same as the X_train = X / 127.5 - 1. line in original training?
+                #rescale=1./255,
+                rotation_range=5,
+                width_shift_range=0.05,
+                height_shift_range=0.05,
+                shear_range=0.05,
+                zoom_range=0.1,
+                horizontal_flip=False,
+                vertical_flip=True,
+                fill_mode='nearest'
+                )
+        #train_data_gen.fit(train_data) # use this if doing any featurewise normalising
+        
         total_images = train_data.shape[0]*augmentations_per_image
-        iters = int(total_images/batch_size)
-        for i in range(iters):
-            #  Train Discriminator
-            batch_indexes = np.random.randint(0, train_data.shape[0], batch_size)
-            batch = train_data[batch_indexes]
-            genenerated = self._predict_noise(batch_size)
-            loss_real = self.discriminator_model.train_on_batch(batch, real)
-            loss_fake = self.discriminator_model.train_on_batch(genenerated, fake)
-            discriminator_loss = 0.5 * np.add(loss_real, loss_fake)
-
-            #  Train Generator (note that training gan also updates self.generator_model)
-            noise = np.random.normal(0, 1, (batch_size, self.generator_input_dim))
-            generator_loss = self.gan.train_on_batch(noise, real)
-
-            # Plot the progress
-            print ("---------------------------------------------------------")
-            print ("******************Batch {}***************************".format(i))
-            print ("Discriminator loss: {}".format(discriminator_loss[0]))
-            print ("Generator loss: {}".format(generator_loss))
-            print ("---------------------------------------------------------")
-            
-            history.append({"D":discriminator_loss[0],"G":generator_loss})
-            
-            # Save images from every hundereth epoch generated images
-            epoch = int(i/batches_per_epoch)
-            if i==0:
-                self._save_images(epoch, output_directory)
-            if epoch != int((i-1)/batches_per_epoch):
-                self._save_images(epoch, output_directory)
-            
-        self._plot_loss(history)
-        self._image_helper.makegif(output_directory)        
+        iters = max(int(total_images/batch_size),1)
+        
+        # Train discriminator with realtime batch augmentations 
+        # note: now doesn't matter if do all discriminator training before gan training...
+        # ...because not using dynamically generated images to train discriminator
+        self.discriminator_model.fit_generator(
+                train_data_gen.flow(train_data, user_ratings, batch_size=batch_size),
+                steps_per_epoch=iters, epochs=1)
+        
+        # Train generator
+        noise = np.random.normal(0, 1, (total_images, self.generator_input_dim))
+        real = np.ones(total_images)
+        self.gan.fit(noise, real, batch_size=batch_size, epochs=1)
     
     def _build_and_compile_gan(self, optimizer):
         real_input = Input(shape=(self.generator_input_dim,))
@@ -372,31 +379,11 @@ class USERGAN():
         # compile combined gan
         self.gan = Model(real_input, discriminator_output)
         self.gan.compile(loss='binary_crossentropy', optimizer=optimizer)
-    
-    def _save_images(self, epoch, output_directory):
-        generated = self._predict_noise(25)
-        generated = 0.5 * generated + 0.5
-        self._image_helper.save_image(generated, epoch, output_directory)
-    
-    def _predict_noise(self, size):
-        noise = np.random.normal(0, 1, (size, self.generator_input_dim))
-        return self.generator_model.predict(noise)
-        
-    def _plot_loss(self, history):
-        hist = pd.DataFrame(history)
-        plt.figure(figsize=(20,5))
-        for colnm in hist.columns:
-            plt.plot(hist[colnm],label=colnm)
-        plt.legend()
-        plt.ylabel("loss")
-        plt.xlabel("epochs")
-        plt.show()
 
 
 
 
 
-#np.random.normal(0, 1, (1, 100))
 '''
 # clip model weights to a given hypercube
 class ClipConstraint(Constraint):

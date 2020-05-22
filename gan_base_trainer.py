@@ -1,3 +1,7 @@
+'''
+script to train base models which can be saved for uploading to usergan used in app
+'''
+
 import os
 os.chdir('/home/angus/projects/picture_gen')
 

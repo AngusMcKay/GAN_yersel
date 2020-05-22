@@ -2,7 +2,6 @@ import os
 import numpy as np
 import imageio
 import matplotlib.pyplot as plt
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 class ImageHelper(object):
     def save_image(self, generated, epoch, directory):
@@ -27,9 +26,5 @@ class ImageHelper(object):
     
     def send_to_ui(self, generated, epoch, directory):
         for i in range(len(generated)):
-            fig, axs = plt.subplots(1, 1)
-            axs[0,0].imshow(generated[i, :,:,0], cmap='gray')
-            axs[0,0].axis('off')
-            fig.savefig("{}/{}-{}.png".format(directory, epoch, i))
-            plt.close()
+            imageio.imwrite("{}/{}-{}.png".format(directory, epoch, i), generated[i])
 
